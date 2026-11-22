@@ -1,0 +1,15 @@
+[package]
+name = "vignette"
+description = "Panes an agent sets out on your screen"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+vignette-core = { path = "../core" }
+vignette-host = { path = "../host" }
+
+[lints]
+workspace = true

@@ -1,0 +1,11 @@
+[package]
+name = "vignette-core"
+description = "The stage, its seats and how panes move, with no platform in it"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
