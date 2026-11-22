@@ -2,8 +2,8 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::windows::io::AsRawHandle;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::ptr::{null, null_mut};
-use std::sync::Once;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::sync::{Mutex, MutexGuard, Once, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -247,6 +247,148 @@ fn refuses_to_start_with_arguments_it_does_not_know() {
     assert!(helper.events.recv_timeout(PATIENCE).is_err());
 }
 
+#[test]
+fn plays_a_window_to_a_new_place_and_size() {
+    for issue in BOTH_ISSUES {
+        let window = hidden_window(120, 140);
+        let mut helper = Sidecar::ready(issue);
+        helper.tell(&format!("play 7 {window:x}@120,140,320,200>420,260,480,300~150"));
+        assert_eq!(helper.hears(), "settled 7", "{issue}");
+        assert_eq!(resting_frame(window, (420, 260, 480, 300)), (420, 260, 480, 300), "{issue}");
+        assert!(!is_visible(window), "{issue}");
+    }
+}
+
+#[test]
+fn a_play_that_keeps_a_windows_size_never_sizes_it() {
+    for issue in BOTH_ISSUES {
+        let window = hidden_window(120, 140);
+        let mut helper = Sidecar::ready(issue);
+        helper.tell(&format!("play 2 {window:x}@120,140,999,999>420,260,999,999~80"));
+        assert_eq!(helper.hears(), "settled 2", "{issue}");
+        assert_eq!(resting_frame(window, (420, 260, 320, 200)), (420, 260, 320, 200), "{issue}");
+    }
+}
+
+#[test]
+fn a_part_waits_out_its_delay_while_the_others_move() {
+    let (first, second) = (hidden_window(100, 100), hidden_window(300, 100));
+    let mut helper = Sidecar::ready("defer");
+    let started = Instant::now();
+    let later = format!("{second:x}@300,100,320,200>360,220,320,200+1500");
+    helper.tell(&format!("play 1 {first:x}@100,100,320,200>160,220,320,200 {later}"));
+
+    assert_eq!(resting_place(first, (160, 220)), (160, 220));
+    assert_eq!(place(second), (300, 100));
+    assert_eq!(helper.hears(), "settled 1");
+    assert!(started.elapsed() >= Duration::from_millis(1400));
+    assert_eq!(resting_place(second, (360, 220)), (360, 220));
+}
+
+#[test]
+fn sizes_a_window_as_its_owner_says_whatever_frame_the_owner_leaves_out() {
+    for issue in BOTH_ISSUES {
+        let window = hidden_window(120, 140);
+        let mut helper = Sidecar::ready(issue);
+        helper.tell(&format!("play 1 {window:x}@132,140,300,180>512,400,500,280~100"));
+        assert_eq!(helper.hears(), "settled 1", "{issue}");
+        assert_eq!(resting_frame(window, (500, 400, 520, 300)), (500, 400, 520, 300), "{issue}");
+    }
+}
+
+#[test]
+fn a_newer_play_carries_on_from_the_size_the_older_one_reached() {
+    for issue in BOTH_ISSUES {
+        let window = hidden_window(120, 140);
+        let mut helper = Sidecar::ready(issue);
+        helper.tell(&format!("play 1 {window:x}@120,140,320,200>120,140,2320,200~60000"));
+        thread::sleep(Duration::from_millis(150));
+        helper.tell(&format!("play 2 {window:x}@120,140,2320,200>120,140,400,240~100"));
+        assert_eq!(helper.hears(), "settled 1", "{issue}");
+        assert_eq!(helper.hears(), "settled 2", "{issue}");
+        assert_eq!(resting_frame(window, (120, 140, 400, 240)), (120, 140, 400, 240), "{issue}");
+    }
+}
+
+#[test]
+fn refuses_a_part_whose_window_its_parent_may_not_move() {
+    let desktop = unsafe { GetDesktopWindow() } as usize;
+    let window = hidden_window(120, 140);
+    let mut helper = Sidecar::ready("defer");
+    let ours = format!("{window:x}@120,140,320,200>200,200,400,240~50");
+    helper.tell(&format!("play 5 {desktop:x}@0,0,10,10>5,5,10,10 1@0,0,10,10>5,5,10,10 {ours}"));
+    assert_eq!(helper.hears(), format!("refused {desktop:x} not-parent-window"));
+    assert_eq!(helper.hears(), "refused 1 no-such-window");
+    assert_eq!(helper.hears(), "settled 5");
+    assert_eq!(resting_frame(window, (200, 200, 400, 240)), (200, 200, 400, 240));
+}
+
+#[test]
+fn answers_a_play_it_cannot_read_and_keeps_serving() {
+    let mut helper = Sidecar::ready("async");
+    helper.tell("play 1 1f@0,0>1,1");
+    assert_eq!(helper.hears(), "refused - bad-rect");
+    helper.tell("stack 1f");
+    assert_eq!(helper.hears(), "refused - missing-argument");
+    helper.tell("stats");
+    assert_eq!(helper.hears(), "stats frames=0 missed=0 mean_us=0 worst_us=0");
+}
+
+#[test]
+fn stacks_windows_in_the_order_given_directly_above_their_base() {
+    let _alone = stacking_alone();
+    for issue in BOTH_ISSUES {
+        let base = hidden_window(100, 100);
+        let (a, b, c) = (hidden_window(110, 110), hidden_window(120, 120), hidden_window(130, 130));
+        let bystander = hidden_window(140, 140);
+        let mut helper = Sidecar::ready(issue);
+        helper.tell(&format!("stack {base:x} {c:x} {a:x} {b:x}"));
+        helper.tell("stats");
+        assert!(helper.hears().starts_with("stats "), "{issue}");
+
+        assert!(directly_above(b, a) && directly_above(a, c) && directly_above(c, base), "{issue}");
+        assert!(is_above(bystander, b), "{issue}");
+        for window in [base, a, b, c, bystander] {
+            assert_eq!(size(window), WINDOW_SIZE, "{issue}");
+            assert!(!is_visible(window), "{issue}");
+        }
+        assert_eq!((place(a), place(b), place(c)), ((110, 110), (120, 120), (130, 130)), "{issue}");
+    }
+}
+
+#[test]
+fn stacks_again_whatever_order_the_windows_were_left_in() {
+    let _alone = stacking_alone();
+    let base = hidden_window(100, 100);
+    let (a, b, c) = (hidden_window(110, 110), hidden_window(120, 120), hidden_window(130, 130));
+    let mut helper = Sidecar::ready("defer");
+    helper.tell(&format!("stack {base:x} {a:x} {b:x} {c:x}"));
+    helper.tell(&format!("stack {base:x} {b:x} {c:x} {a:x}"));
+    helper.tell("stats");
+    assert!(helper.hears().starts_with("stats "));
+    assert!(directly_above(a, c) && directly_above(c, b) && directly_above(b, base));
+}
+
+#[test]
+fn refuses_to_stack_windows_its_parent_does_not_own() {
+    let _alone = stacking_alone();
+    let desktop = unsafe { GetDesktopWindow() } as usize;
+    let (base, a, b) = (hidden_window(100, 100), hidden_window(110, 110), hidden_window(120, 120));
+    let mut helper = Sidecar::ready("defer");
+    helper.tell(&format!("stack {desktop:x} {a:x} {b:x}"));
+    assert_eq!(helper.hears(), format!("refused {desktop:x} not-parent-window"));
+    helper.tell(&format!("stack {base:x} {b:x} 1 {a:x}"));
+    assert_eq!(helper.hears(), "refused 1 no-such-window");
+    assert!(directly_above(a, b) && directly_above(b, base));
+
+    let mut stranger = Sidecar::behind_a_shell();
+    assert!(stranger.hears().starts_with("ready 1 "));
+    stranger.tell(&format!("stack {base:x} {b:x} {a:x}"));
+    assert_eq!(stranger.hears(), format!("refused {base:x} not-parent-window"));
+    thread::sleep(Duration::from_millis(100));
+    assert!(directly_above(a, b) && directly_above(b, base));
+}
+
 const WINDOW_SIZE: (i32, i32) = (320, 200);
 
 struct Sidecar {
@@ -368,6 +510,29 @@ fn resting_place(window: usize, expected: (i32, i32)) -> (i32, i32) {
         thread::sleep(Duration::from_millis(5));
     }
     place(window)
+}
+
+fn resting_frame(window: usize, expected: (i32, i32, i32, i32)) -> (i32, i32, i32, i32) {
+    let whole = || {
+        let ((x, y), (width, height)) = (place(window), size(window));
+        (x, y, width, height)
+    };
+    let deadline = Instant::now() + PATIENCE;
+    while whole() != expected && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(5));
+    }
+    whole()
+}
+
+// Every test shares one desktop, and a stack is placed under whatever stands above its base:
+// two tests stacking at once could each see the other's windows move mid-check.
+fn stacking_alone() -> MutexGuard<'static, ()> {
+    static STACKING: Mutex<()> = Mutex::new(());
+    STACKING.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn directly_above(upper: usize, lower: usize) -> bool {
+    unsafe { GetWindow(upper as HWND, GW_HWNDNEXT) as usize == lower }
 }
 
 fn place(window: usize) -> (i32, i32) {

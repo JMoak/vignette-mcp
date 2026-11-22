@@ -1,5 +1,5 @@
-use crate::easing::{eased_to_rest, point_along};
-use crate::screen::{Point, Standing, Window};
+use crate::easing::{eased_to_rest, point_along, size_along};
+use crate::screen::{Point, Size, Sizing, Standing, Window};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Leg {
@@ -10,9 +10,27 @@ pub struct Leg {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Resize {
+    pub from: Size,
+    pub to: Size,
+    pub window_offset: Size,
+}
+
+/// One window's role in a play: its leg, a change of size when it has one, how long after the
+/// play starts it sets off, and how long it takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Role {
+    pub leg: Leg,
+    pub resize: Option<Resize>,
+    pub delay_ms: u32,
+    pub duration_ms: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Move {
     pub window: Window,
     pub to: Point,
+    pub size: Option<Size>,
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -23,92 +41,128 @@ pub struct Frame {
 
 #[derive(Default)]
 pub struct Tracks {
-    glides: Vec<Glide>,
+    runs: Vec<Run>,
 }
 
 impl Tracks {
+    /// A glide: every window sets off at once, takes the same time and keeps its size.
     pub fn start(&mut self, id: u32, now_us: u64, duration_ms: u32, legs: &[Leg]) -> Vec<u32> {
-        let mut settled: Vec<u32> = legs.iter().flat_map(|leg| self.release(leg.window)).collect();
-        let steps: Vec<Step> = legs.iter().filter(|leg| leg.from != leg.to).map(Step::at_start).collect();
+        let roles: Vec<Role> =
+            legs.iter().map(|leg| Role { leg: *leg, resize: None, delay_ms: 0, duration_ms }).collect();
+        self.play(id, now_us, &roles)
+    }
+
+    pub fn play(&mut self, id: u32, now_us: u64, roles: &[Role]) -> Vec<u32> {
+        let mut settled: Vec<u32> = roles.iter().flat_map(|role| self.release(role.leg.window)).collect();
+        let steps: Vec<Step> =
+            roles.iter().filter(|role| role.changes()).map(|role| Step::waiting(role, now_us)).collect();
         if steps.is_empty() {
             settled.push(id);
         } else {
-            self.glides.push(Glide {
-                id,
-                started_us: now_us,
-                duration_us: u64::from(duration_ms) * 1000,
-                steps,
-            });
+            self.runs.push(Run { id, steps });
         }
         settled
     }
 
     pub fn release(&mut self, window: Window) -> Vec<u32> {
-        for glide in &mut self.glides {
-            glide.steps.retain(|step| step.leg.window != window);
+        for run in &mut self.runs {
+            run.steps.retain(|step| step.role.leg.window != window);
         }
-        self.take_finished(|glide| glide.steps.is_empty())
+        self.take_finished(|run| run.steps.is_empty())
     }
 
     pub fn frame(&mut self, now_us: u64) -> Frame {
-        let moves = self.glides.iter_mut().flat_map(|glide| glide.advance(now_us)).collect();
-        let settled = self.take_finished(|glide| glide.progress(now_us) >= 1.0);
+        let moves = self.runs.iter_mut().flat_map(|run| run.advance(now_us)).collect();
+        let settled = self.take_finished(|run| run.is_over(now_us));
         Frame { moves, settled }
     }
 
     pub fn standing(&self, window: Window) -> Option<Standing> {
-        let mut steps = self.glides.iter().flat_map(|glide| &glide.steps);
-        let step = steps.find(|step| step.leg.window == window)?;
-        Some(Standing { at: step.at, window_offset: step.leg.window_offset })
+        let step = self.step_of(window)?;
+        Some(Standing { at: step.at, window_offset: step.role.leg.window_offset })
+    }
+
+    pub fn sizing(&self, window: Window) -> Option<Sizing> {
+        let step = self.step_of(window)?;
+        let resize = step.role.resize?;
+        Some(Sizing { size: step.sized.unwrap_or(resize.from), window_offset: resize.window_offset })
     }
 
     pub fn is_idle(&self) -> bool {
-        self.glides.is_empty()
+        self.runs.is_empty()
     }
 
-    fn take_finished(&mut self, finished: impl Fn(&Glide) -> bool) -> Vec<u32> {
-        self.glides.extract_if(.., |glide| finished(glide)).map(|glide| glide.id).collect()
+    fn step_of(&self, window: Window) -> Option<&Step> {
+        self.runs.iter().flat_map(|run| &run.steps).find(|step| step.role.leg.window == window)
+    }
+
+    fn take_finished(&mut self, finished: impl Fn(&Run) -> bool) -> Vec<u32> {
+        self.runs.extract_if(.., |run| finished(run)).map(|run| run.id).collect()
     }
 }
 
-struct Glide {
+impl Role {
+    fn changes(&self) -> bool {
+        self.leg.from != self.leg.to || self.resize.is_some_and(|resize| resize.from != resize.to)
+    }
+}
+
+struct Run {
     id: u32,
-    started_us: u64,
-    duration_us: u64,
     steps: Vec<Step>,
 }
 
 struct Step {
-    leg: Leg,
+    role: Role,
+    starts_us: u64,
+    duration_us: u64,
     at: Point,
+    sized: Option<Size>,
 }
 
-impl Glide {
-    fn progress(&self, now_us: u64) -> f64 {
-        if self.duration_us == 0 {
-            return 1.0;
-        }
-        now_us.saturating_sub(self.started_us) as f64 / self.duration_us as f64
+impl Run {
+    fn advance(&mut self, now_us: u64) -> Vec<Move> {
+        self.steps.iter_mut().filter_map(|step| step.advance(now_us)).collect()
     }
 
-    fn advance(&mut self, now_us: u64) -> Vec<Move> {
-        let eased = eased_to_rest(self.progress(now_us));
-        self.steps.iter_mut().filter_map(|step| step.advance(eased)).collect()
+    fn is_over(&self, now_us: u64) -> bool {
+        self.steps.iter().all(|step| step.progress(now_us).is_some_and(|progress| progress >= 1.0))
     }
 }
 
 impl Step {
-    fn at_start(leg: &Leg) -> Step {
-        Step { leg: *leg, at: leg.from }
+    fn waiting(role: &Role, now_us: u64) -> Step {
+        Step {
+            role: *role,
+            starts_us: now_us.saturating_add(u64::from(role.delay_ms) * 1000),
+            duration_us: u64::from(role.duration_ms) * 1000,
+            at: role.leg.from,
+            sized: None,
+        }
     }
 
-    fn advance(&mut self, eased: f64) -> Option<Move> {
-        let point = point_along(self.leg.from, self.leg.to, eased);
-        if point == self.at {
+    // None until the step's turn comes: a window is left alone while it waits.
+    fn progress(&self, now_us: u64) -> Option<f64> {
+        let elapsed_us = now_us.checked_sub(self.starts_us)?;
+        Some(if self.duration_us == 0 { 1.0 } else { elapsed_us as f64 / self.duration_us as f64 })
+    }
+
+    fn advance(&mut self, now_us: u64) -> Option<Move> {
+        let eased = eased_to_rest(self.progress(now_us)?);
+        let Leg { window, from, to, window_offset } = self.role.leg;
+        let point = point_along(from, to, eased);
+        let size = self.role.resize.map(|resize| size_along(resize.from, resize.to, eased));
+        let resized =
+            size.filter(|size| Some(*size) != self.sized.or(self.role.resize.map(|resize| resize.from)));
+        if point == self.at && resized.is_none() {
             return None;
         }
         self.at = point;
-        Some(Move { window: self.leg.window, to: point + self.leg.window_offset })
+        self.sized = size;
+        let outer = |size: Size| {
+            size + self.role.resize.map_or(Size { width: 0, height: 0 }, |resize| resize.window_offset)
+        };
+        Some(Move { window, to: point + window_offset, size: resized.map(outer) })
     }
 }
 
@@ -129,7 +183,21 @@ mod tests {
     }
 
     fn moved(window: Window, to: (i32, i32)) -> Move {
-        Move { window, to: Point { x: to.0, y: to.1 } }
+        Move { window, to: Point { x: to.0, y: to.1 }, size: None }
+    }
+
+    fn sized(window: Window, to: (i32, i32), size: (i32, i32)) -> Move {
+        Move { size: Some(Size { width: size.0, height: size.1 }), ..moved(window, to) }
+    }
+
+    fn role(window: Window, to: (i32, i32), delay_ms: u32, duration_ms: u32) -> Role {
+        Role { leg: leg(window, to), resize: None, delay_ms, duration_ms }
+    }
+
+    fn growing(window: Window, to: (i32, i32), from: (i32, i32), until: (i32, i32)) -> Role {
+        let size = |(width, height): (i32, i32)| Size { width, height };
+        let resize = Resize { from: size(from), to: size(until), window_offset: size((0, 0)) };
+        Role { resize: Some(resize), ..role(window, to, 0, 100) }
     }
 
     #[test]
@@ -262,5 +330,90 @@ mod tests {
         let mut tracks = Tracks::default();
         tracks.start(1, 5_000, 100, &[leg(A, (100, 0))]);
         assert_eq!(tracks.frame(4_000), Frame::default());
+    }
+
+    #[test]
+    fn each_window_sets_off_after_its_own_delay_and_takes_its_own_time() {
+        let mut tracks = Tracks::default();
+        assert!(tracks.play(1, 0, &[role(A, (1000, 0), 0, 100), role(B, (1000, 0), 60, 40)]).is_empty());
+
+        assert_eq!(tracks.frame(50_000).moves, vec![moved(A, (969, 0))]);
+        assert_eq!(tracks.frame(80_000).moves, vec![moved(A, (1000, 0)), moved(B, (969, 0))]);
+        let landed = tracks.frame(100_000);
+        assert_eq!(landed, Frame { moves: vec![moved(B, (1000, 0))], settled: vec![1] });
+        assert!(tracks.is_idle());
+    }
+
+    #[test]
+    fn a_play_settles_only_when_its_last_window_has_landed() {
+        let mut tracks = Tracks::default();
+        tracks.play(1, 0, &[role(A, (10, 0), 0, 10), role(B, (10, 0), 500, 0)]);
+        assert_eq!(tracks.frame(10_000), Frame { moves: vec![moved(A, (10, 0))], settled: vec![] });
+        assert_eq!(tracks.frame(499_000), Frame::default());
+        assert_eq!(tracks.frame(500_000), Frame { moves: vec![moved(B, (10, 0))], settled: vec![1] });
+    }
+
+    #[test]
+    fn a_window_grows_along_the_same_curve_as_it_travels() {
+        let mut tracks = Tracks::default();
+        tracks.play(1, 0, &[growing(A, (1000, 0), (400, 300), (800, 100))]);
+        assert_eq!(tracks.frame(50_000).moves, vec![sized(A, (969, 0), (788, 106))]);
+        assert_eq!(
+            tracks.frame(100_000),
+            Frame { moves: vec![sized(A, (1000, 0), (800, 100))], settled: vec![1] }
+        );
+    }
+
+    #[test]
+    fn a_window_that_only_changes_size_still_plays() {
+        let mut tracks = Tracks::default();
+        assert!(tracks.play(1, 0, &[growing(A, (0, 0), (400, 300), (800, 300))]).is_empty());
+        assert_eq!(tracks.frame(100_000).moves, vec![sized(A, (0, 0), (800, 300))]);
+    }
+
+    #[test]
+    fn says_a_size_only_on_the_frames_that_change_it() {
+        let mut tracks = Tracks::default();
+        tracks.play(1, 0, &[growing(A, (1000, 0), (400, 300), (401, 300))]);
+        assert_eq!(tracks.frame(1_000).moves, vec![moved(A, (49, 0))]);
+        assert_eq!(tracks.frame(50_000).moves, vec![sized(A, (969, 0), (401, 300))]);
+        assert_eq!(tracks.frame(100_000).moves, vec![moved(A, (1000, 0))]);
+    }
+
+    #[test]
+    fn adds_the_frame_the_owner_leaves_out_of_a_size() {
+        let mut tracks = Tracks::default();
+        let mut framed = growing(A, (0, 0), (400, 300), (800, 300));
+        framed.resize =
+            framed.resize.map(|resize| Resize { window_offset: Size { width: 14, height: 7 }, ..resize });
+        tracks.play(1, 0, &[framed]);
+        assert_eq!(tracks.frame(100_000).moves, vec![sized(A, (0, 0), (814, 307))]);
+    }
+
+    #[test]
+    fn remembers_the_size_a_playing_window_was_last_given() {
+        let mut tracks = Tracks::default();
+        tracks.play(1, 0, &[growing(A, (1000, 0), (400, 300), (800, 100)), role(B, (5, 5), 0, 100)]);
+        let none = Size { width: 0, height: 0 };
+        assert_eq!(
+            tracks.sizing(A),
+            Some(Sizing { size: Size { width: 400, height: 300 }, window_offset: none })
+        );
+        tracks.frame(50_000);
+        assert_eq!(
+            tracks.sizing(A),
+            Some(Sizing { size: Size { width: 788, height: 106 }, window_offset: none })
+        );
+        assert_eq!(tracks.sizing(B), None);
+    }
+
+    #[test]
+    fn a_window_waiting_for_its_turn_is_left_alone_and_can_be_taken() {
+        let mut tracks = Tracks::default();
+        tracks.play(1, 0, &[role(A, (100, 0), 1_000, 100)]);
+        assert_eq!(tracks.frame(500_000), Frame::default());
+        assert_eq!(tracks.standing(A), Some(Standing { at: ORIGIN, window_offset: ORIGIN }));
+        assert_eq!(tracks.play(2, 500_000, &[role(A, (0, 50), 0, 0)]), vec![1]);
+        assert_eq!(tracks.frame(500_000), Frame { moves: vec![moved(A, (0, 50))], settled: vec![2] });
     }
 }

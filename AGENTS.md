@@ -23,10 +23,12 @@ the app's. Do not grow a second copy of either here.
   brings `windows-link` from the same repository. Elsewhere a well-known crate may be added when it
   saves real work: pin the exact version, review `Cargo.lock` like source, and keep `crates/core`
   free of dependencies. Jordan decides each addition.
-- **The mover's safety properties** hold and stay tested: it moves only its parent's windows,
-  changes position only (never size, order, visibility or focus), has no file or network access
-  (`crates/panes-mover/clippy.toml` and a manifest test enforce it), cannot outlive the app, is
-  per-monitor DPI aware, and costs nothing when idle.
+- **The mover's safety properties** hold and stay tested: it touches only its parent's windows,
+  changes their position, size and order only (never visibility, focus, frame or an owner), has
+  no file or network access (`crates/panes-mover/clippy.toml` and a manifest test enforce it),
+  cannot outlive the app, is per-monitor DPI aware, and costs nothing when idle. `glide` changes
+  position only; size and order change only through `play` and `stack`
+  (`crates/panes-mover/README.md` has the protocol).
 - **Never takes focus.** Every window call carries the no-activate flag.
 - **`unsafe` lives only in a `win32.rs`**, one call to a block where possible.
 - **One easing.** Everything eases with the fifth-power curve the app's own glides use.

@@ -17,16 +17,48 @@ use windows_sys::Win32::UI::HiDpi::{
     SetProcessDpiAwarenessContext,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    BeginDeferWindowPos, DeferWindowPos, EndDeferWindowPos, GA_ROOT, GetAncestor, GetWindowRect,
-    GetWindowThreadProcessId, SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOSIZE,
-    SWP_NOZORDER, SetWindowPos,
+    BeginDeferWindowPos, DeferWindowPos, EndDeferWindowPos, GA_ROOT, GW_HWNDPREV, GetAncestor, GetWindow,
+    GetWindowRect, GetWindowThreadProcessId, HWND_TOP, SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOMOVE,
+    SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER, SetWindowPos,
 };
 
 use crate::protocol::Rgb;
-use crate::screen::{Point, Window};
-use crate::tracks::Move;
+use crate::screen::{Point, Rect, Size, Window};
 
 pub const POSITION_ONLY: u32 = SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_NOACTIVATE;
+
+const LONGEST_WALK_UP: usize = 4096;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum After {
+    Top,
+    Window(Window),
+}
+
+/// What one call may change about a window: where it is, how large it is, what it stands under.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Placement {
+    pub window: Window,
+    pub to: Option<Point>,
+    pub size: Option<Size>,
+    pub after: Option<After>,
+}
+
+// Every call starts from a move that touches nothing else and gives up only what it was asked to
+// change. None of them can show, hide, activate or reframe a window.
+pub fn flags_of(placement: &Placement) -> u32 {
+    let mut flags = POSITION_ONLY;
+    if placement.to.is_none() {
+        flags |= SWP_NOMOVE;
+    }
+    if placement.size.is_some() {
+        flags &= !SWP_NOSIZE;
+    }
+    if placement.after.is_some() {
+        flags &= !SWP_NOZORDER;
+    }
+    flags
+}
 
 pub struct Parent {
     pub pid: u32,
@@ -63,30 +95,79 @@ pub fn is_top_level(window: Window) -> bool {
 }
 
 pub fn corner(window: Window) -> Option<Point> {
-    let mut frame = RECT::default();
-    let found = unsafe { GetWindowRect(handle(window), &mut frame) } != 0;
-    found.then_some(Point { x: frame.left, y: frame.top })
+    frame(window).map(|frame| frame.origin)
 }
 
-pub fn move_each_async(moves: &[Move]) {
-    for step in moves {
-        let Point { x, y } = step.to;
-        unsafe {
-            SetWindowPos(handle(step.window), null_mut(), x, y, 0, 0, POSITION_ONLY | SWP_ASYNCWINDOWPOS)
-        };
+pub fn frame(window: Window) -> Option<Rect> {
+    let mut frame = RECT::default();
+    let found = unsafe { GetWindowRect(handle(window), &mut frame) } != 0;
+    found.then_some(Rect {
+        origin: Point { x: frame.left, y: frame.top },
+        size: Size { width: frame.right - frame.left, height: frame.bottom - frame.top },
+    })
+}
+
+pub fn nearest_above(base: Window, skipping: &[Window]) -> Option<Window> {
+    let mut above = unsafe { GetWindow(handle(base), GW_HWNDPREV) };
+    for _ in 0..LONGEST_WALK_UP {
+        if above.is_null() {
+            return None;
+        }
+        let window = Window(above as usize);
+        if !skipping.contains(&window) {
+            return Some(window);
+        }
+        above = unsafe { GetWindow(above, GW_HWNDPREV) };
+    }
+    None
+}
+
+pub fn place_each_async(placements: &[Placement]) {
+    for placement in placements {
+        let Asked { after, x, y, width, height, flags } = asked(placement);
+        let window = handle(placement.window);
+        unsafe { SetWindowPos(window, after, x, y, width, height, flags | SWP_ASYNCWINDOWPOS) };
     }
 }
 
-pub fn move_as_one_batch(moves: &[Move]) -> bool {
-    let mut batch = unsafe { BeginDeferWindowPos(moves.len() as i32) };
-    for step in moves {
+// One call after another, each finished before the next: the only way an order that names
+// earlier windows of the same list comes out right when a batch cannot be used.
+pub fn place_each_in_turn(placements: &[Placement]) {
+    for placement in placements {
+        let Asked { after, x, y, width, height, flags } = asked(placement);
+        unsafe { SetWindowPos(handle(placement.window), after, x, y, width, height, flags) };
+    }
+}
+
+pub fn place_as_one_batch(placements: &[Placement]) -> bool {
+    let mut batch = unsafe { BeginDeferWindowPos(placements.len() as i32) };
+    for placement in placements {
         if batch.is_null() {
             return false;
         }
-        let Point { x, y } = step.to;
-        batch = unsafe { DeferWindowPos(batch, handle(step.window), null_mut(), x, y, 0, 0, POSITION_ONLY) };
+        let Asked { after, x, y, width, height, flags } = asked(placement);
+        batch = unsafe { DeferWindowPos(batch, handle(placement.window), after, x, y, width, height, flags) };
     }
     !batch.is_null() && unsafe { EndDeferWindowPos(batch) } != 0
+}
+
+struct Asked {
+    after: HWND,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    flags: u32,
+}
+
+fn asked(placement: &Placement) -> Asked {
+    let Point { x, y } = placement.to.unwrap_or(Point { x: 0, y: 0 });
+    let Size { width, height } = placement.size.unwrap_or(Size { width: 0, height: 0 });
+    let after = match placement.after {
+        Some(After::Window(window)) => handle(window),
+        Some(After::Top) | None => HWND_TOP,
+    };
+    Asked { after, x, y, width, height, flags: flags_of(placement) }
 }
 
 pub fn set_border(window: Window, colour: Option<Rgb>) -> Result<(), i32> {
@@ -154,11 +235,48 @@ fn started_at(process: HANDLE) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        SWP_FRAMECHANGED, SWP_HIDEWINDOW, SWP_NOMOVE, SWP_SHOWWINDOW,
-    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{SWP_FRAMECHANGED, SWP_HIDEWINDOW, SWP_SHOWWINDOW};
 
     use super::*;
+
+    fn every_placement() -> Vec<Placement> {
+        let window = Window(1);
+        let to = Some(Point { x: 1, y: 2 });
+        let size = Some(Size { width: 3, height: 4 });
+        let orders = [None, Some(After::Top), Some(After::Window(Window(2)))];
+        let mut placements = Vec::new();
+        for to in [None, to] {
+            for size in [None, size] {
+                for after in orders {
+                    placements.push(Placement { window, to, size, after });
+                }
+            }
+        }
+        placements
+    }
+
+    #[test]
+    fn a_placement_gives_up_only_what_it_was_asked_to_change() {
+        let window = Window(1);
+        let to = Some(Point { x: 1, y: 2 });
+        let size = Some(Size { width: 3, height: 4 });
+        let flags = |to, size, after| flags_of(&Placement { window, to, size, after });
+        assert_eq!(flags(to, None, None), POSITION_ONLY);
+        assert_eq!(flags(to, size, None), POSITION_ONLY & !SWP_NOSIZE);
+        assert_eq!(flags(None, None, Some(After::Top)), (POSITION_ONLY | SWP_NOMOVE) & !SWP_NOZORDER);
+        assert_eq!(flags(to, size, Some(After::Top)), SWP_NOOWNERZORDER | SWP_NOACTIVATE);
+    }
+
+    #[test]
+    fn no_placement_activates_shows_hides_reframes_or_moves_an_owner() {
+        let never = SWP_SHOWWINDOW | SWP_HIDEWINDOW | SWP_FRAMECHANGED;
+        let always = SWP_NOACTIVATE | SWP_NOOWNERZORDER;
+        for placement in every_placement() {
+            let flags = flags_of(&placement) | SWP_ASYNCWINDOWPOS;
+            assert_eq!(flags & never, 0, "{placement:?}");
+            assert_eq!(flags & always, always, "{placement:?}");
+        }
+    }
 
     #[test]
     fn a_move_never_sizes_reorders_or_activates() {

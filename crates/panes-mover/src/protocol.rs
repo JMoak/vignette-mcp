@@ -2,16 +2,21 @@ use std::fmt;
 use std::ops::RangeInclusive;
 use std::str::{FromStr, SplitAsciiWhitespace};
 
-use crate::screen::{Point, Window};
+use crate::screen::{Point, Rect, Size, Window};
 
 pub const VERSION: u32 = 1;
 pub const MAX_LINE_BYTES: usize = 4096;
 pub const MAX_WINDOWS: usize = 64;
+// A part is longer than a glide's target, and the largest play still has to fit in one line.
+pub const MAX_PLAY_WINDOWS: usize = 32;
 pub const MAX_COORDINATE: i32 = 1_000_000;
+pub const MAX_SIDE: i32 = 100_000;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Command {
     Glide { id: u32, duration_ms: u32, targets: Vec<Target> },
+    Play { id: u32, parts: Vec<Part> },
+    Stack { base: Window, windows: Vec<Window> },
     Release { window: Window },
     Border { window: Window, colour: Option<Rgb> },
     Stats,
@@ -22,6 +27,17 @@ pub struct Target {
     pub window: Window,
     pub at: Point,
     pub to: Point,
+}
+
+/// One window's part in a play: where its owner says it stands, where it goes, how long after
+/// the play starts it sets off, and how long it takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Part {
+    pub window: Window,
+    pub at: Rect,
+    pub to: Rect,
+    pub delay_ms: u32,
+    pub duration_ms: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,6 +72,8 @@ pub enum Reason {
     BadDuration,
     BadWindow,
     BadPoint,
+    BadRect,
+    BadDelay,
     BadColour,
     TooManyWindows,
     DuplicateWindow,
@@ -74,6 +92,8 @@ pub fn parse(line: &str) -> Result<Option<Command>, Reason> {
     };
     let command = match verb {
         "glide" => glide(&mut words)?,
+        "play" => play(&mut words)?,
+        "stack" => stack(&mut words)?,
         "release" => Command::Release { window: window(next(&mut words)?)? },
         "border" => border(&mut words)?,
         "stats" => Command::Stats,
@@ -114,6 +134,8 @@ impl fmt::Display for Reason {
             Reason::BadDuration => "bad-duration",
             Reason::BadWindow => "bad-window",
             Reason::BadPoint => "bad-point",
+            Reason::BadRect => "bad-rect",
+            Reason::BadDelay => "bad-delay",
             Reason::BadColour => "bad-colour",
             Reason::TooManyWindows => "too-many-windows",
             Reason::DuplicateWindow => "duplicate-window",
@@ -150,6 +172,44 @@ fn glide(words: &mut Words) -> Result<Command, Reason> {
     Ok(Command::Glide { id, duration_ms, targets })
 }
 
+fn play(words: &mut Words) -> Result<Command, Reason> {
+    let id = number(next(words)?).ok_or(Reason::BadId)?;
+    let mut parts: Vec<Part> = Vec::new();
+    for word in words {
+        let part = part(word)?;
+        if parts.len() == MAX_PLAY_WINDOWS {
+            return Err(Reason::TooManyWindows);
+        }
+        if parts.iter().any(|earlier| earlier.window == part.window) {
+            return Err(Reason::DuplicateWindow);
+        }
+        parts.push(part);
+    }
+    if parts.is_empty() {
+        return Err(Reason::MissingArgument);
+    }
+    Ok(Command::Play { id, parts })
+}
+
+fn stack(words: &mut Words) -> Result<Command, Reason> {
+    let base = window(next(words)?)?;
+    let mut windows: Vec<Window> = Vec::new();
+    for word in words {
+        let window = window(word)?;
+        if windows.len() == MAX_WINDOWS {
+            return Err(Reason::TooManyWindows);
+        }
+        if window == base || windows.contains(&window) {
+            return Err(Reason::DuplicateWindow);
+        }
+        windows.push(window);
+    }
+    if windows.is_empty() {
+        return Err(Reason::MissingArgument);
+    }
+    Ok(Command::Stack { base, windows })
+}
+
 fn border(words: &mut Words) -> Result<Command, Reason> {
     let window = window(next(words)?)?;
     let colour = match next(words)? {
@@ -167,6 +227,40 @@ fn target(word: &str) -> Result<Target, Reason> {
     let (handle, journey) = word.split_once('@').ok_or(Reason::BadWindow)?;
     let (at, to) = journey.split_once('>').ok_or(Reason::BadPoint)?;
     Ok(Target { window: window(handle)?, at: point(at)?, to: point(to)? })
+}
+
+// <window>@<x>,<y>,<w>,<h>><x>,<y>,<w>,<h>[+<delay ms>][~<duration ms>]
+fn part(word: &str) -> Result<Part, Reason> {
+    let (handle, journey) = word.split_once('@').ok_or(Reason::BadWindow)?;
+    let (at, rest) = journey.split_once('>').ok_or(Reason::BadRect)?;
+    let (rest, duration_ms) = match rest.split_once('~') {
+        Some((rest, duration)) => (rest, number(duration).ok_or(Reason::BadDuration)?),
+        None => (rest, 0),
+    };
+    let (to, delay_ms) = match rest.split_once('+') {
+        Some((to, delay)) => (to, number(delay).ok_or(Reason::BadDelay)?),
+        None => (rest, 0),
+    };
+    Ok(Part { window: window(handle)?, at: rect(at)?, to: rect(to)?, delay_ms, duration_ms })
+}
+
+fn rect(text: &str) -> Result<Rect, Reason> {
+    let mut numbers = text.split(',');
+    let mut next = || numbers.next().ok_or(Reason::BadRect);
+    let origin = Point { x: within_reach(next()?)?, y: within_reach(next()?)? };
+    let size = Size { width: side(next()?)?, height: side(next()?)? };
+    match numbers.next() {
+        Some(_) => Err(Reason::BadRect),
+        None => Ok(Rect { origin, size }),
+    }
+}
+
+fn within_reach(text: &str) -> Result<i32, Reason> {
+    coordinate(text).map_err(|_| Reason::BadRect)
+}
+
+fn side(text: &str) -> Result<i32, Reason> {
+    number::<i32>(text).filter(|side| (1..=MAX_SIDE).contains(side)).ok_or(Reason::BadRect)
 }
 
 fn point(text: &str) -> Result<Point, Reason> {
@@ -341,6 +435,109 @@ mod tests {
         let line = format!("glide {} {}{windows}", u32::MAX, u32::MAX);
         assert!(line.len() <= MAX_LINE_BYTES);
         assert!(parse(&line).is_ok());
+    }
+
+    fn rectangle(x: i32, y: i32, width: i32, height: i32) -> Rect {
+        Rect { origin: Point { x, y }, size: Size { width, height } }
+    }
+
+    #[test]
+    fn reads_a_play_with_each_windows_frame_delay_and_duration() {
+        let line = "play 7 1a2b@80,80,400,300>1200,340,640,480+120~180 ABC@-8,0,200,120>-8,0,200,120";
+        let parts = vec![
+            Part {
+                window: Window(0x1a2b),
+                at: rectangle(80, 80, 400, 300),
+                to: rectangle(1200, 340, 640, 480),
+                delay_ms: 120,
+                duration_ms: 180,
+            },
+            Part {
+                window: Window(0xabc),
+                at: rectangle(-8, 0, 200, 120),
+                to: rectangle(-8, 0, 200, 120),
+                delay_ms: 0,
+                duration_ms: 0,
+            },
+        ];
+        assert_eq!(parse(line).unwrap(), Some(Command::Play { id: 7, parts }));
+    }
+
+    #[test]
+    fn reads_a_delay_or_a_duration_alone() {
+        let part = |text: &str| match parse(&format!("play 1 f@0,0,9,9>1,1,9,9{text}")).unwrap() {
+            Some(Command::Play { parts, .. }) => (parts[0].delay_ms, parts[0].duration_ms),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(part("+40"), (40, 0));
+        assert_eq!(part("~250"), (0, 250));
+        assert_eq!(part("+40~250"), (40, 250));
+    }
+
+    #[test]
+    fn refuses_a_play_that_is_incomplete_or_misordered() {
+        assert_eq!(refusal("play"), Reason::MissingArgument);
+        assert_eq!(refusal("play 1"), Reason::MissingArgument);
+        assert_eq!(refusal("play x f@0,0,9,9>1,1,9,9"), Reason::BadId);
+        assert_eq!(refusal("play 1 f"), Reason::BadWindow);
+        assert_eq!(refusal("play 1 f@0,0,9,9"), Reason::BadRect);
+        assert_eq!(refusal("play 1 f@0,0>1,1"), Reason::BadRect);
+        assert_eq!(refusal("play 1 f@0,0,9,9>1,1,9,9~250+40"), Reason::BadDuration);
+        assert_eq!(refusal("play 1 f@0,0,9,9>1,1,9,9+soon"), Reason::BadDelay);
+        assert_eq!(refusal("play 1 f@0,0,9,9>1,1,9,9~1.5"), Reason::BadDuration);
+    }
+
+    #[test]
+    fn refuses_frames_that_are_not_a_place_and_a_real_size() {
+        assert_eq!(refusal("play 1 f@0,0,9,9>1,1,0,9"), Reason::BadRect);
+        assert_eq!(refusal("play 1 f@0,0,9,9>1,1,9,-9"), Reason::BadRect);
+        assert_eq!(refusal("play 1 f@0,0,9,9>1,1,9,100001"), Reason::BadRect);
+        assert_eq!(refusal("play 1 f@0,0,9,9>1,1,9"), Reason::BadRect);
+        assert_eq!(refusal("play 1 f@0,0,9,9>1,1,9,9,9"), Reason::BadRect);
+        assert_eq!(refusal("play 1 f@0,0,9,9>1000001,1,9,9"), Reason::BadRect);
+        assert_eq!(refusal("play 1 f@0,0,9,9>1.5,1,9,9"), Reason::BadRect);
+    }
+
+    #[test]
+    fn refuses_a_window_named_twice_or_too_many_in_one_play() {
+        let parts = |count: usize| {
+            (1..=count).map(|handle| format!(" {handle:x}@0,0,9,9>1,1,9,9")).collect::<String>()
+        };
+        assert_eq!(refusal("play 1 1f@0,0,9,9>1,1,9,9 1F@0,0,9,9>5,5,9,9"), Reason::DuplicateWindow);
+        assert!(parse(&format!("play 1{}", parts(MAX_PLAY_WINDOWS))).is_ok());
+        assert_eq!(refusal(&format!("play 1{}", parts(MAX_PLAY_WINDOWS + 1))), Reason::TooManyWindows);
+    }
+
+    #[test]
+    fn the_largest_play_fits_in_one_line() {
+        let furthest = format!("-{MAX_COORDINATE},-{MAX_COORDINATE},{MAX_SIDE},{MAX_SIDE}");
+        let longest = u32::MAX;
+        let widest = |handle: u64| format!(" {handle:x}@{furthest}>{furthest}+{longest}~{longest}");
+        let parts: String = (0..MAX_PLAY_WINDOWS as u64).map(|index| widest(u64::MAX - index)).collect();
+        let line = format!("play {longest}{parts}");
+        assert!(line.len() <= MAX_LINE_BYTES, "{} bytes", line.len());
+        assert!(parse(&line).is_ok());
+    }
+
+    #[test]
+    fn reads_a_stack_from_the_bottom_up_above_its_base() {
+        let windows = vec![Window(0xc), Window(0xa), Window(0xb)];
+        assert_eq!(
+            parse("stack 2f0a c a b").unwrap(),
+            Some(Command::Stack { base: Window(0x2f0a), windows })
+        );
+    }
+
+    #[test]
+    fn refuses_a_stack_that_is_incomplete_or_repeats_a_window() {
+        assert_eq!(refusal("stack"), Reason::MissingArgument);
+        assert_eq!(refusal("stack 2f0a"), Reason::MissingArgument);
+        assert_eq!(refusal("stack 2f0a a top"), Reason::BadWindow);
+        assert_eq!(refusal("stack 2f0a a b A"), Reason::DuplicateWindow);
+        assert_eq!(refusal("stack 2f0a a 2F0A"), Reason::DuplicateWindow);
+        let windows = |count: usize| (1..=count).map(|handle| format!(" {handle:x}")).collect::<String>();
+        assert!(parse(&format!("stack ffff{}", windows(MAX_WINDOWS))).is_ok());
+        assert_eq!(refusal(&format!("stack ffff{}", windows(MAX_WINDOWS + 1))), Reason::TooManyWindows);
     }
 
     #[test]

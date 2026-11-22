@@ -3,11 +3,11 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::protocol::{Command, Event, Reason, Rgb, Target};
-use crate::screen::{Standing, Window};
+use crate::protocol::{Command, Event, Part, Reason, Rgb, Target};
+use crate::screen::{Sizing, Standing, Window};
 use crate::stats::FrameStats;
-use crate::tracks::{Frame, Leg, Move, Tracks};
-use crate::win32;
+use crate::tracks::{Frame, Leg, Move, Resize, Role, Tracks};
+use crate::win32::{self, After, Placement};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Issue {
@@ -30,6 +30,8 @@ impl Mover {
     pub fn obey(&self, command: Command) {
         match command {
             Command::Glide { id, duration_ms, targets } => self.desk.glide(id, duration_ms, &targets),
+            Command::Play { id, parts } => self.desk.play(id, &parts),
+            Command::Stack { base, windows } => self.desk.stack(base, &windows),
             Command::Release { window } => self.desk.release(window),
             Command::Border { window, colour } => self.desk.border(window, colour),
             Command::Stats => self.desk.report_stats(),
@@ -50,9 +52,9 @@ impl Issue {
         }
     }
 
-    fn apply(self, moves: &[Move]) {
-        if self == Issue::Async || !win32::move_as_one_batch(moves) {
-            win32::move_each_async(moves);
+    fn apply(self, placements: &[Placement]) {
+        if self == Issue::Async || !win32::place_as_one_batch(placements) {
+            win32::place_each_async(placements);
         }
     }
 }
@@ -98,6 +100,42 @@ impl Desk {
         };
         self.gliding.notify_one();
         announce(refused, settled);
+    }
+
+    fn play(&self, id: u32, parts: &[Part]) {
+        let mut refused = Refusals::new();
+        let settled = {
+            let mut state = self.state();
+            let roles = self.roles(&state.tracks, parts, &mut refused);
+            state.tracks.play(id, self.now_us(), &roles)
+        };
+        self.gliding.notify_one();
+        announce(refused, settled);
+    }
+
+    // The order is set at once, finished before this returns, and under the lock a frame holds:
+    // it never lands inside a frame, and the answer to the `stats` that follows means it is done.
+    // It is never issued asynchronously, because each window's place names the one before it.
+    fn stack(&self, base: Window, windows: &[Window]) {
+        let mut refused = Refusals::new();
+        match self.admit(base) {
+            Err(reason) => refused.push((base, reason)),
+            Ok(()) => {
+                let mut ours = Vec::with_capacity(windows.len());
+                for window in windows {
+                    match self.admit(*window) {
+                        Ok(()) => ours.push(*window),
+                        Err(reason) => refused.push((*window, reason)),
+                    }
+                }
+                let _between_frames = self.state();
+                let order = stacked(base, &ours);
+                if !win32::place_as_one_batch(&order) {
+                    win32::place_each_in_turn(&order);
+                }
+            }
+        }
+        announce(refused, Vec::new());
     }
 
     fn release(&self, window: Window) {
@@ -161,7 +199,7 @@ impl Desk {
             }
             if !moves.is_empty() {
                 let issuing = Instant::now();
-                self.issue.apply(&moves);
+                self.issue.apply(&placed(&moves));
                 state.stats.issued(micros(issuing.elapsed()));
             }
             settled
@@ -186,6 +224,35 @@ impl Desk {
         let standing = tracks.standing(window).or_else(|| standing_as_told(target));
         let Standing { at, window_offset } = standing.ok_or(Reason::NoSuchWindow)?;
         Ok(Leg { window, from: at, to: target.to, window_offset })
+    }
+
+    fn roles(&self, tracks: &Tracks, parts: &[Part], refused: &mut Refusals) -> Vec<Role> {
+        let mut roles = Vec::with_capacity(parts.len());
+        for part in parts {
+            match self.role(tracks, part) {
+                Ok(role) => roles.push(role),
+                Err(reason) => refused.push((part.window, reason)),
+            }
+        }
+        roles
+    }
+
+    // A window already in a play carries on from where that play has brought it, with the frame
+    // measured then; any other is measured against what its owner says about it now.
+    fn role(&self, tracks: &Tracks, part: &Part) -> Result<Role, Reason> {
+        let window = part.window;
+        self.admit(window)?;
+        let frame = win32::frame(window).ok_or(Reason::NoSuchWindow)?;
+        let told = Standing { at: part.at.origin, window_offset: frame.origin - part.at.origin };
+        let Standing { at, window_offset } = tracks.standing(window).unwrap_or(told);
+        let sizing = tracks.sizing(window);
+        let resize = (sizing.is_some() || part.at.size != part.to.size).then(|| {
+            let told = Sizing { size: part.at.size, window_offset: frame.size - part.at.size };
+            let Sizing { size, window_offset } = sizing.unwrap_or(told);
+            Resize { from: size, to: part.to.size, window_offset }
+        });
+        let leg = Leg { window, from: at, to: part.to.origin, window_offset };
+        Ok(Role { leg, resize, delay_ms: part.delay_ms, duration_ms: part.duration_ms })
     }
 
     fn still_ours(
@@ -233,6 +300,24 @@ fn announce(refused: Refusals, settled: Vec<u32>) {
     for id in settled {
         emit(&Event::Settled { id });
     }
+}
+
+fn placed(moves: &[Move]) -> Vec<Placement> {
+    let placement =
+        |step: &Move| Placement { window: step.window, to: Some(step.to), size: step.size, after: None };
+    moves.iter().map(placement).collect()
+}
+
+// From the top down: the highest window goes under whatever already stands above the base and is
+// not being stacked, and each of the others goes directly under the one before it.
+fn stacked(base: Window, bottom_to_top: &[Window]) -> Vec<Placement> {
+    let mut after = win32::nearest_above(base, bottom_to_top).map_or(After::Top, After::Window);
+    let mut placements = Vec::with_capacity(bottom_to_top.len());
+    for window in bottom_to_top.iter().rev() {
+        placements.push(Placement { window: *window, to: None, size: None, after: Some(after) });
+        after = After::Window(*window);
+    }
+    placements
 }
 
 fn standing_as_told(target: &Target) -> Option<Standing> {

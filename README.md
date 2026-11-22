@@ -13,14 +13,19 @@ a pane are not here. They belong to Keywork's engine and to the app.
 ## What exists
 
 - **`crates/panes-mover`** builds `kw-panes-mover`, a sidecar that moves its parent app's pane
-  windows in one batch a frame. It moves only its parent's windows, changes position only, never
-  takes focus, and has no file or network access. It came from the `keywork-rust` repository on
-  2026-11-22, with its 78 tests and its bench.
+  windows in one batch a frame. It touches only its parent's windows, changes their position, size
+  and order only, never shows, hides or focuses one, and has no file or network access. It can
+  play a whole arrangement from one line: each window with its own frame, delay and duration.
+  [Its README](crates/panes-mover/README.md) has the protocol. It came from the `keywork-rust`
+  repository on 2026-11-22 with its bench.
 - **`vignette demo`** (`crates/core`, `crates/host`, `crates/vignette`) is a demo and test double:
   it opens up to sixteen panes natively, arranges them three ways and reports timings.
 
-Not built yet: the stage playing a whole arrangement from one plan (timing, size and stacking),
-Linux (X11), and shipping the mover inside the app by default.
+Not built yet: Keywork-app handing the mover a whole arrangement (it still sends one glide at a
+time and sizes windows itself), and Linux (X11).
+
+Each release publishes `kw-panes-mover-windows-x64.exe` with its SHA-256. Keywork-app pins a
+release, checks the file against that checksum and bundles it.
 
 ## Measured
 

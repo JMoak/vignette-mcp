@@ -1,4 +1,4 @@
-use crate::screen::Point;
+use crate::screen::{Point, Size};
 
 pub fn eased_to_rest(progress: f64) -> f64 {
     1.0 - (1.0 - progress.clamp(0.0, 1.0)).powi(5)
@@ -6,6 +6,13 @@ pub fn eased_to_rest(progress: f64) -> f64 {
 
 pub fn point_along(from: Point, to: Point, eased: f64) -> Point {
     Point { x: coordinate_along(from.x, to.x, eased), y: coordinate_along(from.y, to.y, eased) }
+}
+
+pub fn size_along(from: Size, to: Size, eased: f64) -> Size {
+    Size {
+        width: coordinate_along(from.width, to.width, eased),
+        height: coordinate_along(from.height, to.height, eased),
+    }
 }
 
 fn coordinate_along(from: i32, to: i32, eased: f64) -> i32 {
