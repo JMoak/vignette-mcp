@@ -35,6 +35,15 @@ sixteen windows gliding together (full method and limits in `bench/` and the cra
 A busy main thread still stalls every way alike: holding it for 100 ms delayed a window by about
 110 ms whichever way it was moved.
 
+The same comparison in the real app, with Keywork-app's own harness (`perf:panes-outside`), one
+run each on 22 November 2026 with the mover built from this repository:
+
+| | Moved from JavaScript | Moved by the mover |
+|---|---|---|
+| Frames in which all sixteen panes moved inside one refresh | 20 of 60 (33%) | 52 of 52 |
+| First pane to last within a frame | 10.8 ms in the median frame | 0.1 ms |
+| Load on the app's main process during the glide | 89% of a core | 18%, plus 5% in the mover |
+
 The native demo, one run on 2026-11-21 on the same machine (release build):
 
 | What | Result |

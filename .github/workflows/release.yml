@@ -1,0 +1,54 @@
+name: release
+
+# Pushing a tag vX.Y.Z publishes the mover built from that commit, with its SHA-256 beside it.
+# Keywork-app pins a version, downloads the asset and refuses it unless the digest matches.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  mover:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: install the toolchain rust-toolchain.toml pins
+        run: rustup show
+      - name: the tag must be the mover's own version
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          if ! grep -qx "version = \"$version\"" crates/panes-mover/Cargo.toml; then
+            echo "tag $GITHUB_REF_NAME is not the version in crates/panes-mover/Cargo.toml"
+            exit 1
+          fi
+      - run: cargo test --locked -p panes-mover
+      - run: cargo build --release --locked -p panes-mover
+      - name: stage the asset with its checksums
+        shell: bash
+        run: |
+          mkdir release
+          cp target/release/kw-panes-mover.exe release/kw-panes-mover-windows-x64.exe
+          cd release
+          sha256sum kw-panes-mover-windows-x64.exe > kw-panes-mover-windows-x64.exe.sha256
+          cp kw-panes-mover-windows-x64.exe.sha256 SHA256SUMS
+          cat SHA256SUMS
+      - name: publish the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" release/* \
+            --verify-tag \
+            --title "$GITHUB_REF_NAME" \
+            --notes "kw-panes-mover for Windows x64, built from this tag. Verify it against the .sha256 beside it."
