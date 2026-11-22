@@ -18,7 +18,7 @@ pub enum Command {
     Play { id: u32, parts: Vec<Part> },
     Stack { base: Window, windows: Vec<Window> },
     Release { window: Window },
-    Border { window: Window, colour: Option<Rgb> },
+    Border { window: Window, paint: Paint },
     Stats,
 }
 
@@ -47,6 +47,14 @@ pub struct Rgb {
     pub red: u8,
     pub green: u8,
     pub blue: u8,
+}
+
+/// What a window's frame is drawn in: a colour, the colour the system would give it, or nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Paint {
+    Colour(Rgb),
+    System,
+    Nothing,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -214,11 +222,12 @@ fn stack(words: &mut Words) -> Result<Command, Reason> {
 
 fn border(words: &mut Words) -> Result<Command, Reason> {
     let window = window(next(words)?)?;
-    let colour = match next(words)? {
-        "clear" => None,
-        text => Some(colour(text)?),
+    let paint = match next(words)? {
+        "clear" => Paint::System,
+        "none" => Paint::Nothing,
+        text => Paint::Colour(colour(text)?),
     };
-    Ok(Command::Border { window, colour })
+    Ok(Command::Border { window, paint })
 }
 
 fn next<'line>(words: &mut Words<'line>) -> Result<&'line str, Reason> {
@@ -336,14 +345,10 @@ mod tests {
     fn reads_release_border_and_stats() {
         let orange = Rgb { red: 0xff, green: 0x88, blue: 0x00 };
         assert_eq!(parse("release 2f0a").unwrap(), Some(Command::Release { window: Window(0x2f0a) }));
-        assert_eq!(
-            parse("border 2f0a ff8800").unwrap(),
-            Some(Command::Border { window: Window(0x2f0a), colour: Some(orange) })
-        );
-        assert_eq!(
-            parse("border 2f0a clear").unwrap(),
-            Some(Command::Border { window: Window(0x2f0a), colour: None })
-        );
+        let border = |paint| Some(Command::Border { window: Window(0x2f0a), paint });
+        assert_eq!(parse("border 2f0a ff8800").unwrap(), border(Paint::Colour(orange)));
+        assert_eq!(parse("border 2f0a clear").unwrap(), border(Paint::System));
+        assert_eq!(parse("border 2f0a none").unwrap(), border(Paint::Nothing));
         assert_eq!(parse("stats").unwrap(), Some(Command::Stats));
     }
 
@@ -568,7 +573,8 @@ mod tests {
         assert_eq!(refusal("border 2f0a #ff8800"), Reason::BadColour);
         assert_eq!(refusal("border 2f0a ff8800ff"), Reason::BadColour);
         assert_eq!(refusal("border 2f0a orange"), Reason::BadColour);
-        assert_eq!(refusal("border 2f0a none"), Reason::BadColour);
+        assert_eq!(refusal("border 2f0a None"), Reason::BadColour);
+        assert_eq!(refusal("border 2f0a nothing"), Reason::BadColour);
     }
 
     #[test]

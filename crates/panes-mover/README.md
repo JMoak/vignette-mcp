@@ -24,7 +24,7 @@ Numbers are whole and in physical pixels. A window is its handle in hexadecimal.
 | `play <id> <part> ...` | Plays up to 32 windows, each with its own frame, delay and duration. A part is `<window>@<x>,<y>,<w>,<h>><x>,<y>,<w>,<h>`, then optionally `+<delay ms>`, then optionally `~<duration ms>`, then optionally `!`. A window waits untouched until its delay has passed. Its size grows along the way, or with `!` changes at once as it sets off. A part whose size does not change never sizes its window. |
 | `stack <base> <window> ...` | Orders up to 64 windows from the bottom up, directly above `<base>` and under whatever already stood above it. Done before the next command is read. |
 | `release <window>` | Stops moving a window and leaves it where it is. |
-| `border <window> <rrggbb>` or `border <window> clear` | Colours a window's frame (Windows 11). |
+| `border <window> <rrggbb>`, `border <window> none` or `border <window> clear` | Colours a window's frame, draws no frame at all, or gives the frame back the colour the system chooses (Windows 11; `none` since 0.3.0). Before Windows 11 it is refused with `border-failed`, and the window keeps the frame it has. |
 | `stats` | Reports the frames issued since the last report. Its answer comes after every command before it has been taken up, so the pair is a round trip. |
 
 A newer `glide` or `play` takes a window out of an older one and carries on from where that one

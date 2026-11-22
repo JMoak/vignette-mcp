@@ -15,7 +15,9 @@ a pane are not here. They belong to Keywork's engine and to the app.
 - **`crates/panes-mover`** builds `kw-panes-mover`, a sidecar that moves its parent app's pane
   windows in one batch a frame. It touches only its parent's windows, changes their position, size
   and order only, never shows, hides or focuses one, and has no file or network access. It can
-  play a whole arrangement from one line: each window with its own frame, delay and duration.
+  play a whole arrangement from one line: each window with its own frame, delay and duration. On
+  Windows 11 it also sets the colour of a window's edge, or takes the edge away, which is how the
+  app draws a pane with no border at rest and an outline when a pane wants the keeper.
   [Its README](crates/panes-mover/README.md) has the protocol. It came from the `keywork-rust`
   repository on 2026-11-22 with its bench.
 - **`vignette demo`** (`crates/core`, `crates/host`, `crates/vignette`) is a demo and test double:

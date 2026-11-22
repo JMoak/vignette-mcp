@@ -2,8 +2,8 @@ use std::ptr::null_mut;
 
 use windows_sys::Win32::Foundation::{CloseHandle, FILETIME, HANDLE, HWND, INVALID_HANDLE_VALUE, RECT};
 use windows_sys::Win32::Graphics::Dwm::{
-    DWM_TIMING_INFO, DWMWA_BORDER_COLOR, DWMWA_COLOR_DEFAULT, DwmFlush, DwmGetCompositionTimingInfo,
-    DwmSetWindowAttribute,
+    DWM_TIMING_INFO, DWMWA_BORDER_COLOR, DWMWA_COLOR_DEFAULT, DWMWA_COLOR_NONE, DwmFlush,
+    DwmGetCompositionTimingInfo, DwmSetWindowAttribute,
 };
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
@@ -22,7 +22,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER, SetWindowPos,
 };
 
-use crate::protocol::Rgb;
+use crate::protocol::{Paint, Rgb};
 use crate::screen::{Point, Rect, Size, Window};
 
 pub const POSITION_ONLY: u32 = SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_NOACTIVATE;
@@ -170,8 +170,12 @@ fn asked(placement: &Placement) -> Asked {
     Asked { after, x, y, width, height, flags: flags_of(placement) }
 }
 
-pub fn set_border(window: Window, colour: Option<Rgb>) -> Result<(), i32> {
-    let colour = colour.map_or(DWMWA_COLOR_DEFAULT, colorref);
+pub fn set_border(window: Window, paint: Paint) -> Result<(), i32> {
+    let colour = match paint {
+        Paint::Colour(colour) => colorref(colour),
+        Paint::System => DWMWA_COLOR_DEFAULT,
+        Paint::Nothing => DWMWA_COLOR_NONE,
+    };
     let size = size_of_val(&colour) as u32;
     let result = unsafe {
         DwmSetWindowAttribute(handle(window), DWMWA_BORDER_COLOR as u32, (&raw const colour).cast(), size)

@@ -3,7 +3,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::protocol::{Command, Event, Part, Reason, Rgb, Target};
+use crate::protocol::{Command, Event, Paint, Part, Reason, Target};
 use crate::screen::{Sizing, Standing, Window};
 use crate::stats::FrameStats;
 use crate::tracks::{Frame, Leg, Move, Resize, Role, Tracks};
@@ -33,7 +33,7 @@ impl Mover {
             Command::Play { id, parts } => self.desk.play(id, &parts),
             Command::Stack { base, windows } => self.desk.stack(base, &windows),
             Command::Release { window } => self.desk.release(window),
-            Command::Border { window, colour } => self.desk.border(window, colour),
+            Command::Border { window, paint } => self.desk.border(window, paint),
             Command::Stats => self.desk.report_stats(),
         }
     }
@@ -143,9 +143,9 @@ impl Desk {
         announce(Refusals::new(), settled);
     }
 
-    fn border(&self, window: Window, colour: Option<Rgb>) {
+    fn border(&self, window: Window, paint: Paint) {
         let painted =
-            self.admit(window).and_then(|()| win32::set_border(window, colour).map_err(Reason::BorderFailed));
+            self.admit(window).and_then(|()| win32::set_border(window, paint).map_err(Reason::BorderFailed));
         if let Err(reason) = painted {
             emit(&Event::Refused { window: Some(window), reason });
         }

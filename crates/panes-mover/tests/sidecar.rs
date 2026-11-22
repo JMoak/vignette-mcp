@@ -119,6 +119,19 @@ fn refuses_a_window_its_parent_does_not_own() {
 }
 
 #[test]
+fn paints_takes_away_and_gives_back_the_frame_of_its_parents_window() {
+    let window = hidden_window(120, 140);
+    let mut helper = Sidecar::ready("async");
+    for paint in ["ff8800", "none", "clear", "none"] {
+        helper.tell(&format!("border {window:x} {paint}"));
+    }
+    helper.tell("stats");
+    assert!(helper.hears().starts_with("stats "), "a frame was refused");
+    assert!(!is_visible(window));
+    assert_eq!(place(window), (120, 140));
+}
+
+#[test]
 fn refuses_the_desktop_and_handles_that_are_no_window() {
     let desktop = unsafe { GetDesktopWindow() } as usize;
     let mut helper = Sidecar::ready("async");
