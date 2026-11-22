@@ -21,7 +21,7 @@ Numbers are whole and in physical pixels. A window is its handle in hexadecimal.
 | Command | What it does |
 |---|---|
 | `glide <id> <ms> <window>@<x>,<y>><x>,<y> ...` | Moves up to 64 windows from where their owner says they are to where they go, all setting off now and taking `<ms>`. |
-| `play <id> <part> ...` | Plays up to 32 windows, each with its own frame, delay and duration. A part is `<window>@<x>,<y>,<w>,<h>><x>,<y>,<w>,<h>`, then optionally `+<delay ms>`, then optionally `~<duration ms>`. A window waits untouched until its delay has passed. A part whose size does not change never sizes its window. |
+| `play <id> <part> ...` | Plays up to 32 windows, each with its own frame, delay and duration. A part is `<window>@<x>,<y>,<w>,<h>><x>,<y>,<w>,<h>`, then optionally `+<delay ms>`, then optionally `~<duration ms>`, then optionally `!`. A window waits untouched until its delay has passed. Its size grows along the way, or with `!` changes at once as it sets off. A part whose size does not change never sizes its window. |
 | `stack <base> <window> ...` | Orders up to 64 windows from the bottom up, directly above `<base>` and under whatever already stood above it. Done before the next command is read. |
 | `release <window>` | Stops moving a window and leaves it where it is. |
 | `border <window> <rrggbb>` or `border <window> clear` | Colours a window's frame (Windows 11). |
@@ -43,6 +43,14 @@ whose app leaves out a border still lands where the app means.
 | `refused <window> <reason>` | That window was left out of a command. The rest of the command goes ahead. |
 | `refused - <reason>` | A line could not be read. Nothing was done. |
 | `stats frames=<n> missed=<n> mean_us=<n> worst_us=<n>` | The answer to `stats`. |
+
+## What sizing costs
+
+Windows sizes a window while the call waits, so a frame that sizes many windows takes longer than
+a frame that only moves them. Measured in Keywork-app on 22 November 2026 (60 Hz, sixteen real
+panes, one run each): moving only, or sizing at once, 62 updates a second; growing on the way,
+62 with four panes, 56 with eight and 30 with sixteen. In every case all the panes of a frame
+changed inside one refresh. The app chooses `!` when many panes change size at once.
 
 ## How it keeps windows together
 

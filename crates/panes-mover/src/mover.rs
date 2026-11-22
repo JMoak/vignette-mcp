@@ -249,7 +249,7 @@ impl Desk {
         let resize = (sizing.is_some() || part.at.size != part.to.size).then(|| {
             let told = Sizing { size: part.at.size, window_offset: frame.size - part.at.size };
             let Sizing { size, window_offset } = sizing.unwrap_or(told);
-            Resize { from: size, to: part.to.size, window_offset }
+            Resize { from: size, to: part.to.size, window_offset, at_once: part.size_at_once }
         });
         let leg = Leg { window, from: at, to: part.to.origin, window_offset };
         Ok(Role { leg, resize, delay_ms: part.delay_ms, duration_ms: part.duration_ms })

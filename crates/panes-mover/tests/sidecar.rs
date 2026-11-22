@@ -271,6 +271,25 @@ fn a_play_that_keeps_a_windows_size_never_sizes_it() {
 }
 
 #[test]
+fn a_part_told_to_takes_its_size_at_once_and_then_only_travels() {
+    for issue in BOTH_ISSUES {
+        let window = hidden_window(120, 140);
+        let mut helper = Sidecar::ready(issue);
+        helper.tell(&format!("play 1 {window:x}@120,140,320,200>2120,140,480,300~60000!"));
+        let whole = || (place(window), size(window));
+        let deadline = Instant::now() + PATIENCE;
+        while size(window) != (480, 300) && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
+        let (at, sized) = whole();
+        assert_eq!(sized, (480, 300), "{issue}");
+        assert!(at.0 < 2120, "{issue}: {at:?}");
+        helper.tell(&format!("release {window:x}"));
+        assert_eq!(helper.hears(), "settled 1", "{issue}");
+    }
+}
+
+#[test]
 fn a_part_waits_out_its_delay_while_the_others_move() {
     let (first, second) = (hidden_window(100, 100), hidden_window(300, 100));
     let mut helper = Sidecar::ready("defer");

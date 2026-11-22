@@ -21,8 +21,8 @@ a pane are not here. They belong to Keywork's engine and to the app.
 - **`vignette demo`** (`crates/core`, `crates/host`, `crates/vignette`) is a demo and test double:
   it opens up to sixteen panes natively, arranges them three ways and reports timings.
 
-Not built yet: Keywork-app handing the mover a whole arrangement (it still sends one glide at a
-time and sizes windows itself), and Linux (X11).
+Not built yet: a pane's first showing as part of a play (Keywork-app still shows and moves those
+one cue at a time), restacking through the mover from the app, and Linux (X11).
 
 Each release publishes `kw-panes-mover-windows-x64.exe` with its SHA-256. Keywork-app pins a
 release, checks the file against that checksum and bundles it.

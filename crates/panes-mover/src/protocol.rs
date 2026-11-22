@@ -30,7 +30,8 @@ pub struct Target {
 }
 
 /// One window's part in a play: where its owner says it stands, where it goes, how long after
-/// the play starts it sets off, and how long it takes.
+/// the play starts it sets off, how long it takes, and whether it takes its new size at once as
+/// it sets off instead of growing into it on the way.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Part {
     pub window: Window,
@@ -38,6 +39,7 @@ pub struct Part {
     pub to: Rect,
     pub delay_ms: u32,
     pub duration_ms: u32,
+    pub size_at_once: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -229,8 +231,12 @@ fn target(word: &str) -> Result<Target, Reason> {
     Ok(Target { window: window(handle)?, at: point(at)?, to: point(to)? })
 }
 
-// <window>@<x>,<y>,<w>,<h>><x>,<y>,<w>,<h>[+<delay ms>][~<duration ms>]
+// <window>@<x>,<y>,<w>,<h>><x>,<y>,<w>,<h>[+<delay ms>][~<duration ms>][!]
 fn part(word: &str) -> Result<Part, Reason> {
+    let (word, size_at_once) = match word.strip_suffix('!') {
+        Some(rest) => (rest, true),
+        None => (word, false),
+    };
     let (handle, journey) = word.split_once('@').ok_or(Reason::BadWindow)?;
     let (at, rest) = journey.split_once('>').ok_or(Reason::BadRect)?;
     let (rest, duration_ms) = match rest.split_once('~') {
@@ -241,7 +247,7 @@ fn part(word: &str) -> Result<Part, Reason> {
         Some((to, delay)) => (to, number(delay).ok_or(Reason::BadDelay)?),
         None => (rest, 0),
     };
-    Ok(Part { window: window(handle)?, at: rect(at)?, to: rect(to)?, delay_ms, duration_ms })
+    Ok(Part { window: window(handle)?, at: rect(at)?, to: rect(to)?, delay_ms, duration_ms, size_at_once })
 }
 
 fn rect(text: &str) -> Result<Rect, Reason> {
@@ -451,6 +457,7 @@ mod tests {
                 to: rectangle(1200, 340, 640, 480),
                 delay_ms: 120,
                 duration_ms: 180,
+                size_at_once: false,
             },
             Part {
                 window: Window(0xabc),
@@ -458,6 +465,7 @@ mod tests {
                 to: rectangle(-8, 0, 200, 120),
                 delay_ms: 0,
                 duration_ms: 0,
+                size_at_once: false,
             },
         ];
         assert_eq!(parse(line).unwrap(), Some(Command::Play { id: 7, parts }));
@@ -472,6 +480,20 @@ mod tests {
         assert_eq!(part("+40"), (40, 0));
         assert_eq!(part("~250"), (0, 250));
         assert_eq!(part("+40~250"), (40, 250));
+    }
+
+    #[test]
+    fn reads_whether_a_window_takes_its_size_at_once() {
+        let at_once = |text: &str| match parse(&format!("play 1 f@0,0,9,9>1,1,20,20{text}")).unwrap() {
+            Some(Command::Play { parts, .. }) => parts[0].size_at_once,
+            other => panic!("{other:?}"),
+        };
+        assert!(!at_once("~250"));
+        assert!(at_once("~250!"));
+        assert!(at_once("+40~250!"));
+        assert!(at_once("!"));
+        assert_eq!(refusal("play 1 f@0,0,9,9>1,1,20,20!~250"), Reason::BadRect);
+        assert_eq!(refusal("play 1 f@0,0,9,9>1,1,20,20~250!!"), Reason::BadDuration);
     }
 
     #[test]
@@ -512,7 +534,7 @@ mod tests {
     fn the_largest_play_fits_in_one_line() {
         let furthest = format!("-{MAX_COORDINATE},-{MAX_COORDINATE},{MAX_SIDE},{MAX_SIDE}");
         let longest = u32::MAX;
-        let widest = |handle: u64| format!(" {handle:x}@{furthest}>{furthest}+{longest}~{longest}");
+        let widest = |handle: u64| format!(" {handle:x}@{furthest}>{furthest}+{longest}~{longest}!");
         let parts: String = (0..MAX_PLAY_WINDOWS as u64).map(|index| widest(u64::MAX - index)).collect();
         let line = format!("play {longest}{parts}");
         assert!(line.len() <= MAX_LINE_BYTES, "{} bytes", line.len());

@@ -14,6 +14,8 @@ pub struct Resize {
     pub from: Size,
     pub to: Size,
     pub window_offset: Size,
+    /// The window takes its new size on the first frame of its turn, then only travels.
+    pub at_once: bool,
 }
 
 /// One window's role in a play: its leg, a change of size when it has one, how long after the
@@ -151,7 +153,10 @@ impl Step {
         let eased = eased_to_rest(self.progress(now_us)?);
         let Leg { window, from, to, window_offset } = self.role.leg;
         let point = point_along(from, to, eased);
-        let size = self.role.resize.map(|resize| size_along(resize.from, resize.to, eased));
+        let grown = |resize: Resize| {
+            if resize.at_once { resize.to } else { size_along(resize.from, resize.to, eased) }
+        };
+        let size = self.role.resize.map(grown);
         let resized =
             size.filter(|size| Some(*size) != self.sized.or(self.role.resize.map(|resize| resize.from)));
         if point == self.at && resized.is_none() {
@@ -196,7 +201,8 @@ mod tests {
 
     fn growing(window: Window, to: (i32, i32), from: (i32, i32), until: (i32, i32)) -> Role {
         let size = |(width, height): (i32, i32)| Size { width, height };
-        let resize = Resize { from: size(from), to: size(until), window_offset: size((0, 0)) };
+        let resize =
+            Resize { from: size(from), to: size(until), window_offset: size((0, 0)), at_once: false };
         Role { resize: Some(resize), ..role(window, to, 0, 100) }
     }
 
@@ -362,6 +368,19 @@ mod tests {
             tracks.frame(100_000),
             Frame { moves: vec![sized(A, (1000, 0), (800, 100))], settled: vec![1] }
         );
+    }
+
+    #[test]
+    fn a_window_told_to_takes_its_size_on_the_first_frame_of_its_turn_and_then_only_travels() {
+        let mut tracks = Tracks::default();
+        let mut at_once = growing(A, (1000, 0), (400, 300), (800, 100));
+        at_once.resize = at_once.resize.map(|resize| Resize { at_once: true, ..resize });
+        at_once.delay_ms = 20;
+        tracks.play(1, 0, &[at_once]);
+        assert_eq!(tracks.frame(10_000), Frame::default());
+        assert_eq!(tracks.frame(21_000).moves, vec![sized(A, (49, 0), (800, 100))]);
+        assert_eq!(tracks.frame(70_000).moves, vec![moved(A, (969, 0))]);
+        assert_eq!(tracks.frame(120_000), Frame { moves: vec![moved(A, (1000, 0))], settled: vec![1] });
     }
 
     #[test]
