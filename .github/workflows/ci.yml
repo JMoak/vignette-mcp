@@ -52,4 +52,6 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y xvfb
-          xvfb-run -a cargo test -p input-helper --locked --test real_x11 -- --ignored --test-threads=1 --skip reports_the_keeper
+          # -noreset: an X server starts itself over when its last client leaves, and refuses
+          # whoever connects in that moment. These tests connect and leave one after another.
+          xvfb-run -a -s "-screen 0 1280x1024x24 -noreset" cargo test -p input-helper --locked --test real_x11 -- --ignored --test-threads=1 --skip reports_the_keeper

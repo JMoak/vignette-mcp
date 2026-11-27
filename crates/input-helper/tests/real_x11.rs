@@ -3,8 +3,11 @@
 //! machine is opted in with `KW_INPUT_HELPER_REAL_INPUT=yes`:
 //!
 //! ```sh
-//! xvfb-run -a cargo test -p input-helper --test real_x11 -- --ignored --test-threads=1 --skip reports_the_keeper
+//! xvfb-run -a -s "-screen 0 1280x1024x24 -noreset" cargo test -p input-helper --test real_x11 -- --ignored --test-threads=1 --skip reports_the_keeper
 //! ```
+//!
+//! `-noreset` matters: an X server starts itself over when its last client leaves and refuses
+//! whoever connects in that moment, and these tests connect and leave one after another.
 //!
 //! `reports_the_keeper_s_own_input` needs a person at a real X desktop.
 
