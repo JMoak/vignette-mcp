@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/core", "crates/host", "crates/panes-mover", "crates/vignette"]
+members = ["crates/core", "crates/host", "crates/input-helper", "crates/panes-mover", "crates/vignette"]
 
 [workspace.package]
 version = "0.0.1"

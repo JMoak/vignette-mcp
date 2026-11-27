@@ -22,5 +22,34 @@ jobs:
         run: rustup show
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --locked -- -D warnings
-      - name: unit tests, and the mover against real hidden windows
+      - name: unit tests, the mover against real hidden windows, and the input helper run dry
         run: cargo test --locked
+
+  # The input helper beyond Windows. Nothing here injects input except into Xvfb's own display.
+  input-helper:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: rustup, where the runner image lacks it
+        if: ${{ runner.os == 'Linux' }}
+        run: |
+          if ! command -v rustup > /dev/null; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          fi
+      - name: install the toolchain rust-toolchain.toml pins
+        run: rustup show
+      - run: cargo clippy -p input-helper --all-targets --locked -- -D warnings
+      - name: unit tests, and the helper run dry
+        run: cargo test -p input-helper --locked
+      - name: real XTest input into a virtual display (Xvfb)
+        if: ${{ runner.os == 'Linux' }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb
+          xvfb-run -a cargo test -p input-helper --locked --test real_x11 -- --ignored --test-threads=1 --skip reports_the_keeper

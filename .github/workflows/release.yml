@@ -1,7 +1,9 @@
 name: release
 
-# Pushing a tag vX.Y.Z publishes the mover built from that commit, with its SHA-256 beside it.
-# Keywork-app pins a version, downloads the asset and refuses it unless the digest matches.
+# Pushing a tag vX.Y.Z publishes the mover and the input helper built from that commit, each with
+# its SHA-256 beside it and all of them in SHA256SUMS. Both crates must carry the tag's version.
+# Nothing is published unless every binary builds and passes its tests. Keywork-app pins a version,
+# downloads an asset and refuses it unless the digest matches. Nothing here is signed yet.
 
 on:
   push:
@@ -18,8 +20,6 @@ jobs:
   mover:
     runs-on: windows-latest
     timeout-minutes: 20
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: install the toolchain rust-toolchain.toml pins
@@ -34,21 +34,96 @@ jobs:
           fi
       - run: cargo test --locked -p panes-mover
       - run: cargo build --release --locked -p panes-mover
-      - name: stage the asset with its checksums
+      - name: stage the asset with its checksum
         shell: bash
         run: |
           mkdir release
           cp target/release/kw-panes-mover.exe release/kw-panes-mover-windows-x64.exe
           cd release
           sha256sum kw-panes-mover-windows-x64.exe > kw-panes-mover-windows-x64.exe.sha256
-          cp kw-panes-mover-windows-x64.exe.sha256 SHA256SUMS
+          cat kw-panes-mover-windows-x64.exe.sha256
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-mover
+          path: release/*
+          if-no-files-found: error
+
+  helper:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: windows-latest, asset: kw-input-helper-windows-x64.exe, built: kw-input-helper.exe }
+          - { runner: ubuntu-latest, asset: kw-input-helper-linux-x64, built: kw-input-helper }
+          - { runner: ubuntu-24.04-arm, asset: kw-input-helper-linux-arm64, built: kw-input-helper }
+          - { runner: macos-latest, asset: kw-input-helper-darwin-arm64, built: kw-input-helper }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: rustup, where the runner image lacks it
+        if: ${{ runner.os == 'Linux' }}
+        shell: bash
+        run: |
+          if ! command -v rustup > /dev/null; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          fi
+      - name: install the toolchain rust-toolchain.toml pins
+        run: rustup show
+      - name: the tag must be the input helper's own version
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          if ! grep -qx "version = \"$version\"" crates/input-helper/Cargo.toml; then
+            echo "tag $GITHUB_REF_NAME is not the version in crates/input-helper/Cargo.toml"
+            exit 1
+          fi
+      - name: unit tests, and the helper run dry (nothing here injects input)
+        run: cargo test --locked -p input-helper
+      - run: cargo build --release --locked -p input-helper
+      - name: stage the asset with its checksum
+        shell: bash
+        run: |
+          mkdir release
+          cp "target/release/${{ matrix.built }}" "release/${{ matrix.asset }}"
+          cd release
+          if command -v sha256sum > /dev/null; then sha256sum "${{ matrix.asset }}" > "${{ matrix.asset }}.sha256"
+          else shasum -a 256 "${{ matrix.asset }}" > "${{ matrix.asset }}.sha256"; fi
+          cat "${{ matrix.asset }}.sha256"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-${{ matrix.asset }}
+          path: release/*
+          if-no-files-found: error
+
+  publish:
+    needs: [mover, helper]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: release-*
+          path: release
+          merge-multiple: true
+      - name: verify every checksum and write SHA256SUMS
+        run: |
+          cd release
+          for sum in *.sha256; do sha256sum -c "$sum"; done
+          cat *.sha256 > SHA256SUMS
+          test "$(wc -l < SHA256SUMS)" -eq 5
           cat SHA256SUMS
       - name: publish the release
-        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" release/* \
             --verify-tag \
             --title "$GITHUB_REF_NAME" \
-            --notes "kw-panes-mover for Windows x64, built from this tag. Verify it against the .sha256 beside it."
+            --notes "kw-panes-mover for Windows x64, and kw-input-helper for Windows x64, Linux x64, Linux arm64 and macOS arm64, built from this tag and not yet signed. Verify each against the .sha256 beside it or SHA256SUMS."

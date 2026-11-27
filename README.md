@@ -20,14 +20,22 @@ a pane are not here. They belong to Keywork's engine and to the app.
   app draws a pane with no border at rest and an outline when a pane wants the keeper.
   [Its README](crates/panes-mover/README.md) has the protocol. It came from the `keywork-rust`
   repository on 2026-11-22 with its bench.
+- **`crates/input-helper`** builds `kw-input-helper`, the program the app starts while a remote
+  keeper controls this machine: it turns their pointer and keys, sent under a live grant, into
+  real input, and tells the app when someone here uses the machine so control can pause. Windows,
+  Linux (X11) and macOS. [Its README](crates/input-helper/README.md) has the protocol and what
+  it may do.
 - **`vignette demo`** (`crates/core`, `crates/host`, `crates/vignette`) is a demo and test double:
   it opens up to sixteen panes natively, arranges them three ways and reports timings.
 
 Not built yet: a pane's first showing as part of a play (Keywork-app still shows and moves those
-one cue at a time), restacking through the mover from the app, and Linux (X11).
+one cue at a time), restacking through the mover from the app, the mover on Linux (X11), and the
+input helper on Wayland.
 
-Each release publishes `kw-panes-mover-windows-x64.exe` with its SHA-256. Keywork-app pins a
-release, checks the file against that checksum and bundles it.
+Each release publishes `kw-panes-mover-windows-x64.exe` and `kw-input-helper` for Windows x64,
+Linux x64, Linux arm64 and macOS arm64, each with its SHA-256 and all in `SHA256SUMS`. Both crates
+carry the release's version. Keywork-app pins a release, checks each file against its checksum and
+bundles it. Nothing is signed yet.
 
 ## Measured
 

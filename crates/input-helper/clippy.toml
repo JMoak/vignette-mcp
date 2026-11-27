@@ -1,0 +1,19 @@
+disallowed-types = [
+  { path = "std::fs::File", reason = "the helper has no file access" },
+  { path = "std::fs::OpenOptions", reason = "the helper has no file access" },
+  { path = "std::fs::ReadDir", reason = "the helper has no file access" },
+  { path = "std::net::TcpStream", reason = "the helper has no network access" },
+  { path = "std::net::TcpListener", reason = "the helper has no network access" },
+  { path = "std::net::UdpSocket", reason = "the helper has no network access" },
+]
+disallowed-methods = [
+  { path = "std::fs::read", reason = "the helper has no file access" },
+  { path = "std::fs::read_to_string", reason = "the helper has no file access" },
+  { path = "std::fs::read_dir", reason = "the helper has no file access" },
+  { path = "std::fs::write", reason = "the helper has no file access" },
+  { path = "std::fs::copy", reason = "the helper has no file access" },
+  { path = "std::fs::rename", reason = "the helper has no file access" },
+  { path = "std::fs::remove_file", reason = "the helper has no file access" },
+  { path = "std::fs::remove_dir_all", reason = "the helper has no file access" },
+  { path = "std::fs::create_dir_all", reason = "the helper has no file access" },
+]

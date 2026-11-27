@@ -1,0 +1,39 @@
+[package]
+name = "input-helper"
+version = "0.4.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "kw-input-helper"
+path = "src/main.rs"
+
+[target.'cfg(windows)'.dependencies.windows-sys]
+version = "=0.61.2"
+features = [
+  "Win32_Foundation",
+  "Win32_Graphics_Gdi",
+  "Win32_System_Console",
+  "Win32_System_LibraryLoader",
+  "Win32_System_Threading",
+  "Win32_UI_HiDpi",
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_UI_WindowsAndMessaging",
+]
+
+# X11 through the X protocol itself: no C library to link, so the helper builds for any Linux target.
+[target.'cfg(any(target_os = "linux", check_foreign))'.dependencies.x11rb]
+version = "=0.14.0"
+default-features = false
+features = ["randr", "xinput", "xtest"]
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+unused_must_use = "deny"
+# `--cfg check_foreign` type-checks the X11 and macOS backends on any host (README).
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(check_foreign)"] }
+
+[lints.clippy]
+disallowed_methods = "deny"
+disallowed_types = "deny"
